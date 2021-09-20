@@ -1,0 +1,173 @@
+# Considering CH4 as natural gas 
+# CH4 + 2(O2 + 3.77N2) → CO2 + 2 H2O + 7.54 N2
+import nasaPoly
+from scipy.optimize import fminbound
+import numpy as np
+
+CH4 = nasaPoly.Species('CH4')
+O2 = nasaPoly.Species('O2')
+CO2 = nasaPoly.Species('CO2')
+H2O = nasaPoly.Species('H2O')
+N2 = nasaPoly.Species('N2')
+
+
+# Compute T_H:
+T_1 = 273.15 # K ; standard temperature 
+delta_H_rxn = lambda T_2: np.abs((CO2.h_0(T_2) + 2*H2O.h_0(T_2) + 7.54*N2.h_0(T_2)) - \
+                (CH4.h_0(T_1) + 2*(O2.h_0(T_1) + 3.77*N2.h_0(T_1))))
+
+T_H_gas = fminbound(delta_H_rxn, 300, 6000)
+print(f'T_H_gas={T_H_gas:.4g} K')
+
+T_rxn = (T_1 + T_H_gas)/2
+h_rxn = np.abs((CO2.h_0(T_rxn) + 2*H2O.h_0(T_rxn) + 7.54*N2.h_0(T_rxn)) - \
+                (CH4.h_0(T_rxn) + 2*(O2.h_0(T_rxn) + 3.77*N2.h_0(T_rxn)))) / (CH4.molecular_wt*1e-3) # J/kg C8H18
+kg_CO2_per_kg_gas = (CO2.molecular_wt*1e-3)/(1*(CH4.molecular_wt*1e-3))
+
+# Natural gas Rankine Cycle Simulation
+import CoolProp as cp
+import numpy as np
+from matplotlib import pyplot as plt
+
+
+# Parameterization
+turbine_efficiency = 0.9
+mass_flow_rate = .012 # kg/s
+pump_efficiency = .855 
+
+CO2 = cp.AbstractState('HEOS', 'CO2')
+
+T_dome = np.linspace(273.15, CO2.T_critical()*0.99999, 250)
+s_l_dome = []
+h_l_dome = []
+s_v_dome = []
+h_v_dome = []
+
+for T in T_dome:
+  CO2.update(cp.QT_INPUTS, 0, T)
+  s_l_dome.append(CO2.smass())
+  h_l_dome.append(CO2.hmass())
+  CO2.update(cp.QT_INPUTS, 1, T)
+  s_v_dome.append(CO2.smass())
+  h_v_dome.append(CO2.hmass())
+
+
+T_peak_efficiency_test = np.linspace(304.14, 2000, 10000)
+
+# Given:
+P_1 = 50e5 
+P_2 = 150e5 # Pa Pump pressure
+P_4 = P_1 # Isobaric condensation
+T_boiler = T_H_gas # K
+T_3 = T_boiler # K
+
+# Simulate rankine cycle
+CO2.update(cp.PQ_INPUTS, P_1, 0)
+s_cycle = []
+u_cycle = []
+T_cycle = []
+P_cycle = []
+h_cycle = []
+h_1 = CO2.hmass()
+u_1 = CO2.umass()
+s_1 = CO2.smass()
+T_1 = CO2.T()
+P_1 = CO2.p()
+
+
+# 1->2: Isentropic compression
+CO2.update(cp.PSmass_INPUTS, P_1, s_1)
+for P in np.linspace(P_1, pump_efficiency * P_2, 250):
+  CO2.update(cp.PSmass_INPUTS, P, s_1)
+  s_cycle.append(CO2.smass())
+  u_cycle.append(CO2.umass())
+  T_cycle.append(CO2.T())
+  P_cycle.append(CO2.p())
+  h_cycle.append(CO2.hmass())
+h_2 = h_cycle[-1]
+u_2 = u_cycle[-1]
+s_2 = s_cycle[-1]
+T_2 = T_cycle[-1]
+
+# 2->3: Isobaric heating
+for T in np.linspace(T_2, T_3, 250):
+  CO2.update(cp.PT_INPUTS, pump_efficiency * P_2, T)
+  s_cycle.append(CO2.smass())
+  u_cycle.append(CO2.umass())
+  T_cycle.append(CO2.T())
+  P_cycle.append(CO2.p())
+  h_cycle.append(CO2.hmass())
+h_3 = h_cycle[-1]
+u_3 = u_cycle[-1]
+s_3 = s_cycle[-1]
+P_3 = P_cycle[-1]
+
+# 3->4: Isentropic expansion through turbine
+for P in np.linspace(P_3, P_4, 250):
+  CO2.update(cp.PSmass_INPUTS, P, s_3)
+  s_cycle.append(CO2.smass())
+  u_cycle.append(CO2.umass())
+  T_cycle.append(CO2.T())
+  P_cycle.append(CO2.p())
+  h_cycle.append(CO2.hmass())
+h_4 = h_cycle[-1]
+u_4 = u_cycle[-1]
+s_4 = s_cycle[-1]
+T_4 = T_cycle[-1]
+
+# 4->1: Isobaric cooling
+for s in np.linspace(s_4, s_1, 250):
+  CO2.update(cp.PSmass_INPUTS, P_4, s)
+  s_cycle.append(CO2.smass())
+  u_cycle.append(CO2.umass())
+  T_cycle.append(CO2.T())
+  P_cycle.append(CO2.p())
+  h_cycle.append(CO2.hmass())
+
+# END SIMULATION
+
+# Plot vapor dome
+plt.plot(s_l_dome, T_dome, '--', color='black')
+plt.plot(s_v_dome, T_dome, '--', color='black', label='CO2 Vapor Dome')
+
+# Plot cycle
+plt.plot(s_cycle, T_cycle, '-', color='tab:blue')
+plt.plot(s_1, T_1, 'o', color='red')
+plt.annotate('1', (s_1, T_1))
+plt.plot(s_2, T_2, 'o', color='red')
+plt.annotate('2', (s_2, T_2))
+plt.plot(s_3, T_3, 'o', color='red')
+plt.annotate('3', (s_3, T_3))
+plt.plot(s_4, T_4, 'o', color='red')
+plt.annotate('4', (s_4, T_4))
+plt.legend()
+plt.xlabel('$s$ [J/kg-K]')
+plt.ylabel('$T$ [K]')
+plt.show()
+
+# FIRST LAW: W_dot = m_dot*(h_in - h_out) | w_net = w_pump + w_turbine
+electricty_output = mass_flow_rate * turbine_efficiency * (h_3-h_4) # J/s or watts <-- correct
+w_net = (h_3 - h_4) + (h_1 - h_2) # W/kg
+q_in = (h_3 - h_2) # W/kg
+q_in_regen = .8 * ((h_3 - h_2) + (h_4 - h_1)) #.8 is the limiting factor of the regen
+eta_rankine = w_net / q_in_regen
+eta_carnot = 1 - T_1 / T_boiler
+
+print(f'Work out = {w_net:0.3g} J')
+print(f'Q in = {q_in:0.3g} J')
+print(f'Electricity output = {electricty_output:0.3g} watts')
+print(f'Rankine first law efficiency = {eta_rankine:0.3g} ')
+print(f'Carnot efficiency = {eta_carnot:0.3g}')
+print(f'Second law efficiency = {eta_rankine / eta_carnot:0.3g}')
+
+# Carbon Intensity (natural gas)
+eta_I_normal = w_net / q_in
+eta_c = 1 - T_1/T_H_gas
+
+I_normal = kg_CO2_per_kg_gas/h_rxn/eta_I_normal # kgCO2/J
+print(f'I_normal={I_normal:.3g} kgCO2/J')
+
+E_per_year = 8.28e19 # J (assumes just electricity demand)
+kg_CO2_per_year_normal = E_per_year * I_normal
+
+print(f'Total CO2 produced each year using this process: {kg_CO2_per_year_normal*1e-12:.3g} Gt')
